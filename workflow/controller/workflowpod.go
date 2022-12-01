@@ -1185,6 +1185,10 @@ func createSecretVolumesFromArtifactLocations(volMap map[string]apiv1.Volume, ar
 		} else if artifactLocation.HDFS != nil {
 			createSecretVal(volMap, artifactLocation.HDFS.KrbCCacheSecret, keyMap)
 			createSecretVal(volMap, artifactLocation.HDFS.KrbKeytabSecret, keyMap)
+		} else if artifactLocation.OCI != nil {
+			fmt.Println("DEBUG: running createSecretVal function")
+			createSecretVal(volMap, artifactLocation.OCI.AccessKeySecret, keyMap)
+			createSecretVal(volMap, artifactLocation.OCI.SecretKeySecret, keyMap)
 		} else if artifactLocation.OSS != nil {
 			createSecretVal(volMap, artifactLocation.OSS.AccessKeySecret, keyMap)
 			createSecretVal(volMap, artifactLocation.OSS.SecretKeySecret, keyMap)

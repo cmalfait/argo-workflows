@@ -13,6 +13,7 @@ import (
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/hdfs"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/http"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/logging"
+	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/oci"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/oss"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/raw"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/resource"
@@ -249,6 +250,39 @@ func newDriver(ctx context.Context, art *wfv1.Artifact, ri resource.Interface) (
 			Endpoint:    art.Azure.Endpoint,
 			UseSDKCreds: art.Azure.UseSDKCreds,
 		}
+		return &driver, nil
+	}
+
+	if art.OCI != nil {
+		var accessKey string
+		var secretKey string
+
+		if art.OCI.AccessKeySecret != nil && art.OCI.AccessKeySecret.Name != "" {
+			accessKeyBytes, err := ri.GetSecret(ctx, art.OCI.AccessKeySecret.Name, art.OCI.AccessKeySecret.Key)
+			if err != nil {
+				return nil, err
+			}
+			accessKey = accessKeyBytes
+			secretKeyBytes, err := ri.GetSecret(ctx, art.OCI.SecretKeySecret.Name, art.OCI.SecretKeySecret.Key)
+			if err != nil {
+				return nil, err
+			}
+			secretKey = secretKeyBytes
+		}
+
+		driver := oci.ArtifactDriver{
+			Provider:        art.OCI.Provider,
+			CompartmentOCID: art.OCI.CompartmentOCID,
+			TenancyOCID:     art.OCI.TenancyOCID,
+			UserOCID:        art.OCI.UserOCID,
+			Region:          art.OCI.Region,
+			Fingerprint:     art.OCI.Fingerprint,
+			PrivateKey:      art.OCI.PrivateKey,
+			Passphrase:      art.OCI.Passphrase,
+			AccessKey:       accessKey,
+			SecretKey:       secretKey,
+		}
+
 		return &driver, nil
 	}
 

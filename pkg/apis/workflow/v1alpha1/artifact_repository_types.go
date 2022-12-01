@@ -26,6 +26,8 @@ type ArtifactRepository struct {
 	GCS *GCSArtifactRepository `json:"gcs,omitempty" protobuf:"bytes,6,opt,name=gcs"`
 	// Azure stores artifact in an Azure Storage account
 	Azure *AzureArtifactRepository `json:"azure,omitempty" protobuf:"bytes,7,opt,name=azure"`
+	// OCI stores artifact in an OCI object store
+	OCI *OCIArtifactRepository `json:"oci,omitempty" protobuf:"bytes,8,opt,name=oci"`
 }
 
 func (a *ArtifactRepository) IsArchiveLogs() bool {
@@ -47,6 +49,8 @@ func (a *ArtifactRepository) Get() ArtifactRepositoryType {
 		return a.GCS
 	} else if a.HDFS != nil {
 		return a.HDFS
+	} else if a.OCI != nil {
+		return a.OCI
 	} else if a.OSS != nil {
 		return a.OSS
 	} else if a.S3 != nil {
@@ -119,6 +123,22 @@ func (r *GCSArtifactRepository) IntoArtifactLocation(l *ArtifactLocation) {
 		k = DefaultArchivePattern
 	}
 	l.GCS = &GCSArtifact{GCSBucket: r.GCSBucket, Key: k}
+}
+
+// OCIArtifactRepository defines the controller configuration for a OCI artifact repository
+type OCIArtifactRepository struct {
+	OCIBucket `json:",inline" protobuf:"bytes,1,opt,name=oCIBucket"`
+
+	// KeyFormat is defines the format of how to store keys. Can reference workflow variables
+	KeyFormat string `json:"keyFormat,omitempty" protobuf:"bytes,2,opt,name=keyFormat"`
+}
+
+func (r *OCIArtifactRepository) IntoArtifactLocation(l *ArtifactLocation) {
+	k := r.KeyFormat
+	if k == "" {
+		k = DefaultArchivePattern
+	}
+	l.OCI = &OCIArtifact{OCIBucket: r.OCIBucket, Key: k}
 }
 
 // ArtifactoryArtifactRepository defines the controller configuration for an artifactory artifact repository

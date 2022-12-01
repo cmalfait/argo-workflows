@@ -1148,6 +1148,9 @@ type ArtifactLocation struct {
 
 	// Azure contains Azure Storage artifact location details
 	Azure *AzureArtifact `json:"azure,omitempty" protobuf:"bytes,10,opt,name=azure"`
+
+	// OCI contains OCI artifact location details
+	OCI *OCIArtifact `json:"oci,omitempty" protobuf:"bytes,11,opt,name=oci"`
 }
 
 func (a *ArtifactLocation) Get() (ArtifactLocationType, error) {
@@ -1165,6 +1168,8 @@ func (a *ArtifactLocation) Get() (ArtifactLocationType, error) {
 		return a.HDFS, nil
 	} else if a.HTTP != nil {
 		return a.HTTP, nil
+	} else if a.OCI != nil {
+		return a.OCI, nil
 	} else if a.OSS != nil {
 		return a.OSS, nil
 	} else if a.Raw != nil {
@@ -1189,6 +1194,8 @@ func (a *ArtifactLocation) SetType(x ArtifactLocationType) error {
 		a.HDFS = &HDFSArtifact{}
 	case *HTTPArtifact:
 		a.HTTP = &HTTPArtifact{}
+	case *OCIArtifact:
+		a.OCI = &OCIArtifact{}
 	case *OSSArtifact:
 		a.OSS = &OSSArtifact{}
 	case *RawArtifact:
@@ -2705,6 +2712,45 @@ func (g *GCSArtifact) SetKey(key string) error {
 
 func (g *GCSArtifact) HasLocation() bool {
 	return g != nil && g.Bucket != "" && g.Key != ""
+}
+
+// OCIArtifact is the location of an Oracle Cloud OS artifact
+type OCIArtifact struct {
+	OCIBucket `json:",inline" protobuf:"bytes,1,opt,name=oCIBucket"`
+
+	// Key is the path in the bucket where the artifact resides
+	Key string `json:"key" protobuf:"bytes,2,opt,name=key"`
+}
+
+// OCIBucket contains the access information required for interfacing with an Oracle OCI Cloud OS bucket
+type OCIBucket struct {
+	// Bucket is the name of the bucket
+	Provider        string `json:"provider,omitempty" protobuf:"bytes,1,opt,name=provider"`
+	Bucket          string `json:"bucket,omitempty" protobuf:"bytes,2,opt,name=bucket"`
+	CompartmentOCID string `json:"compartment_ocid,omitempty" protobuf:"bytes,3,opt,name=compartment_ocid"`
+	TenancyOCID     string `json:"tenancy_ocid,omitempty" protobuf:"bytes,4,opt,name=tenancy_ocid"`
+	UserOCID        string `json:"user_ocid,omitempty" protobuf:"bytes,5,opt,name=user_ocid"`
+	Region          string `json:"region,omitempty" protobuf:"bytes,6,opt,name=region"`
+	Fingerprint     string `json:"fingerprint,omitempty" protobuf:"bytes,7,opt,name=fingerprint"`
+	PrivateKey      string `json:"privatekey,omitempty" protobuf:"bytes,8,opt,name=privatekey"`
+	Passphrase      string `json:"passphrase" protobuf:"bytes,12,opt,name=passphrase"`
+	// AccessKeySecret is the selector to the bucket's access key
+	AccessKeySecret *apiv1.SecretKeySelector `json:"accessKeySecret,omitempty" protobuf:"bytes,10,opt,name=accessKeySecret"`
+	// SecretKeySecret is the selector to the bucket's secret key
+	SecretKeySecret *apiv1.SecretKeySelector `json:"secretKeySecret,omitempty" protobuf:"bytes,11,opt,name=secretKeySecret"`
+}
+
+func (oci *OCIArtifact) GetKey() (string, error) {
+	return oci.Key, nil
+}
+
+func (oci *OCIArtifact) SetKey(key string) error {
+	oci.Key = key
+	return nil
+}
+
+func (oci *OCIArtifact) HasLocation() bool {
+	return oci != nil && oci.Bucket != "" && oci.Key != ""
 }
 
 // OSSBucket contains the access information required for interfacing with an Alibaba Cloud OSS bucket
