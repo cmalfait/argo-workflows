@@ -9,6 +9,6 @@ import (
 )
 
 func TestIsTransientOCIErr(t *testing.T) {
-	assert.True(t, isTransientOCIErr())
+	assert.True(t, isTransientOCIErr(assert.AnError))
 	//	assert.False(t, isTransientOCIErr())
 }

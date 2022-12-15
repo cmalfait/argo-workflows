@@ -2,21 +2,23 @@ package oci
 
 import (
 	"context"
-	"fmt"
 	"io"
+	"io/ioutil"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"time"
 
-	"github.com/oracle/oci-go-sdk/v65/objectstorage/transfer"
 	"github.com/oracle/oci-go-sdk/v65/objectstorage"
+	"github.com/oracle/oci-go-sdk/v65/objectstorage/transfer"
 
 	ocicommon "github.com/oracle/oci-go-sdk/v65/common"
 	ociauth "github.com/oracle/oci-go-sdk/v65/common/auth"
 	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/argoproj/argo-workflows/v3/errors"
 	wfv1 "github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
 	waitutil "github.com/argoproj/argo-workflows/v3/util/wait"
 	"github.com/argoproj/argo-workflows/v3/workflow/artifacts/common"
@@ -29,8 +31,8 @@ type ArtifactDriver struct {
 	UserOCID        string
 	Region          string
 	Fingerprint     string
-	PrivateKey		string
-	Passphrase		string
+	PrivateKey      string
+	Passphrase      string
 	AccessKey       string
 	SecretKey       string
 }
@@ -42,25 +44,27 @@ var (
 
 func (ociDriver *ArtifactDriver) initializeConfigurationProvider() (context.Context, objectstorage.ObjectStorageClient) {
 	var configurationProvider ocicommon.ConfigurationProvider
+	//	errors.Code
 
 	// We accept 3 types of auth.  1. instance_principal, 2. k8s_secret, 3. raw
 	// We default to instance principal
 	switch ociDriver.Provider {
 	case "instance_principal":
-		configurationProvider = initializeInstancePrincipalProvider() 
+		configurationProvider = initializeInstancePrincipalProvider()
 	case "k8s_secret":
-		// Trim whitespace
+		// Trim whitespace, couldn't get this to work otherwise
 		access := strings.TrimSpace(ociDriver.AccessKey)
 		configurationProvider = ocicommon.NewRawConfigurationProvider(ociDriver.TenancyOCID, ociDriver.UserOCID, ociDriver.Region, access, ociDriver.SecretKey, nil)
 	case "raw":
 		configurationProvider = ocicommon.NewRawConfigurationProvider(ociDriver.TenancyOCID, ociDriver.UserOCID, ociDriver.Region, ociDriver.Fingerprint, ociDriver.PrivateKey, nil)
 	default:
-		configurationProvider = initializeInstancePrincipalProvider() 
+		log.Infof("INFO: Provider not set, defaulting to instance_principal")
+		configurationProvider = initializeInstancePrincipalProvider()
 	}
 
 	storageClient, err := objectstorage.NewObjectStorageClientWithConfigurationProvider(configurationProvider)
 	if err != nil {
-		log.Errorf("ObjectStorageClient error %s", err)
+		log.Errorf("ERROR: ObjectStorageClient error %s", err)
 	}
 
 	ctx := context.Background()
@@ -71,18 +75,83 @@ func (ociDriver *ArtifactDriver) initializeConfigurationProvider() (context.Cont
 func initializeInstancePrincipalProvider() ocicommon.ConfigurationProvider {
 	configurationProvider, err := ociauth.InstancePrincipalConfigurationProvider()
 	if err != nil {
-		log.Errorf("Error in instance principal config provider %s", err)
+		log.Errorf("ERROR: In instance principal config provider %s", err)
 	}
 	return configurationProvider
+}
+
+func (ociDriver *ArtifactDriver) ListObjects(artifact *wfv1.Artifact) ([]string, error) {
+	log.Info("DEBUG: ListObjects")
+	var files []string
+	err := waitutil.Backoff(defaultRetry,
+		func() (bool, error) {
+			log.Infof("INFO: OCI List bucket: %s, key %s", artifact.OCI.Bucket, artifact.OCI.Key)
+			ctx, storageClient := ociDriver.initializeConfigurationProvider()
+			namespace := getNamespace(ctx, storageClient)
+			files = listByPrefix(ctx, storageClient, namespace, artifact.OCI.Bucket, artifact.OCI.Key)
+			return true, nil
+		})
+	return files, err
+}
+
+func listByPrefix(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, bucketname string, prefix_files_name string) []string {
+	var filelist []string
+	request := objectstorage.ListObjectsRequest{
+		NamespaceName: &namespace,
+		BucketName:    &bucketname,
+		Prefix:        &prefix_files_name,
+	}
+	r, err := storageClient.ListObjects(ctx, request)
+	fatalIfError(err)
+
+	for _, v := range r.ListObjects.Objects {
+		log.Infof("INFO: %v\n", *v.Name)
+		filelist = append(filelist, *v.Name)
+	}
+	if filelist == nil {
+		log.Infof("INFO: No files with prefix %s found in bucket %s to download", prefix_files_name, bucketname)
+		return nil
+	}
+	log.Infof("INFO: Filelist: %v", filelist)
+	return filelist
 }
 
 func (ociDriver *ArtifactDriver) Load(inputArtifact *wfv1.Artifact, path string) error {
 	err := waitutil.Backoff(defaultRetry,
 		func() (bool, error) {
-			log.Infof("OCI Load path: %s, key %s", path, inputArtifact.OCI.Key)
+			log.Infof("INFO: OCI Load path: %v, key %v", path, inputArtifact.OCI.Key)
+			ctx, storageClient := ociDriver.initializeConfigurationProvider()
+			namespace := getNamespace(ctx, storageClient)
+			err := downloadObject(ctx, storageClient, namespace, inputArtifact.OCI.Bucket, inputArtifact.OCI.Key, path)
+			if err != nil {
+				log.Warnf("WARNING: Failed to download object from OCI: %v", err)
+				return !isTransientOCIErr(err), err
+			}
 			return true, nil
 		})
 
+	return err
+}
+func downloadObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, bucketname string, objectname string, path string) (err error) {
+	request := objectstorage.GetObjectRequest{
+		NamespaceName: &namespace,
+		BucketName:    &bucketname,
+		ObjectName:    &objectname,
+	}
+	r, err := storageClient.GetObject(ctx, request)
+	fatalIfError(err)
+
+	filedata, err := ioutil.ReadAll(r.Content)
+	fatalIfError(err)
+
+	f, err := os.Create(path)
+	fatalIfError(err)
+	defer f.Close()
+
+	_, err = f.Write(filedata)
+	fatalIfError(err)
+
+	log.Infof("INFO: Downloaded file %v from bucket %v to %v", objectname, bucketname, path)
 	return err
 }
 
@@ -100,9 +169,9 @@ func (ociDriver *ArtifactDriver) Save(path string, outputArtifact *wfv1.Artifact
 			namespace := getNamespace(ctx, storageClient)
 			bucketName := outputArtifact.OCI.OCIBucket.Bucket
 
-			err := putObject(ctx, storageClient, namespace, path, bucketName, objectName, nil)
+			err := putObject(ctx, storageClient, namespace, path, bucketName, objectName)
 			if err != nil {
-				log.Errorf("Error putting object: %v", err)
+				return !isTransientOCIErr(err), err
 			}
 
 			return true, nil
@@ -110,23 +179,23 @@ func (ociDriver *ArtifactDriver) Save(path string, outputArtifact *wfv1.Artifact
 	return err
 }
 
-// upload a local object or dir to OCI storage
-func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace, path, bucketName, objectName string, metadata map[string]string) error {
+// func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, path string, bucketName string, objectName string, metadata map[string]string) error {
+func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, path string, bucketName string, objectName string) error {
 	uploadManager := transfer.NewUploadManager()
 	req := transfer.UploadFileRequest{
 		UploadRequest: transfer.UploadRequest{
-			NamespaceName:                       ocicommon.String(namespace),
-			BucketName:                          ocicommon.String(bucketName),
-			ObjectName:                          ocicommon.String(objectName),
-			PartSize:                            ocicommon.Int64(128 * 1024 * 1024),
+			NamespaceName:                       &namespace,
+			BucketName:                          &bucketName,
+			ObjectName:                          &objectName,
+			PartSize:                            ocicommon.Int64(100 * 1024 * 1024),
 			CallBack:                            callBack,
 			ObjectStorageClient:                 &storageClient,
 			EnableMultipartChecksumVerification: ocicommon.Bool(true),
 		},
 		FilePath: path,
 	}
-		
-	// if you want to overwrite default value, you can do it
+
+	// if you want to overwrite the default value, you can do it
 	// as: transfer.UploadRequest.AllowMultipartUploads = common.Bool(false) // default is true
 	// or: transfer.UploadRequest.AllowParrallelUploads = common.Bool(false) // default is true
 	resp, err := uploadManager.UploadFile(ctx, req)
@@ -134,7 +203,7 @@ func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageCli
 	if err != nil && resp.IsResumable() {
 		resp, err = uploadManager.ResumeUploadFile(ctx, *resp.MultipartUploadResponse.UploadID)
 		if err != nil {
-			fmt.Println(resp)
+			log.Errorf("ERROR: %v", resp)
 		}
 	}
 	return err
@@ -142,29 +211,9 @@ func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageCli
 
 func callBack(multiPartUploadPart transfer.MultiPartUploadPart) {
 	if nil == multiPartUploadPart.Err {
-		// Please refer this as the progress bar print content.
-		fmt.Printf("Part: %d / %d is uploaded.\n", multiPartUploadPart.PartNum, multiPartUploadPart.TotalParts)
-		fmt.Printf("One example of progress bar could be the above comment content.\n")
-		// Please refer following fmt to get each part opc-md5 res.
-		fmt.Printf("and this part opcMD5(64BasedEncoding) is: %s.\n", *multiPartUploadPart.OpcMD5 )
+		log.Infof("INFO: Part: %d / %d is uploaded.", multiPartUploadPart.PartNum, multiPartUploadPart.TotalParts)
+		log.Infof("INFO: and this part opcMD5(64BasedEncoding) is: %s.\n", *multiPartUploadPart.OpcMD5)
 	}
-}
-
-// log fatal error
-func fatalIfError(err error) {
-	if err != nil {
-		log.Errorf(err.Error())
-	}
-}
-
-// return our namespace string
-func getNamespace(ctx context.Context, client objectstorage.ObjectStorageClient) string {
-	request := objectstorage.GetNamespaceRequest{}
-	r, err := client.GetNamespace(ctx, request)
-	fatalIfError(err)
-
-	//namespace string
-	return *r.Value
 }
 
 func (ociDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
@@ -179,45 +228,55 @@ func (ociDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
 
 			err := deleteObject(ctx, storageClient, namespace, bucketName, objectName)
 			if err != nil {
-				log.Errorf("Error deleting object: %v", err)
+				log.Errorf("ERROR: Could not delete object: %v", err)
 			}
 			return true, nil
 		})
 	return err
 }
 
-func deleteObject(ctx context.Context, c objectstorage.ObjectStorageClient, namespace, bucketname, objectname string) (err error) {
+func deleteObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, bucketname string, objectname string) (err error) {
 	request := objectstorage.DeleteObjectRequest{
 		NamespaceName: &namespace,
 		BucketName:    &bucketname,
 		ObjectName:    &objectname,
 	}
-	_, err = c.DeleteObject(ctx, request)
+	_, err = storageClient.DeleteObject(ctx, request)
 	fatalIfError(err)
-	fmt.Println("Deleted object ", objectname)
+	log.Infof("INFO: Deleted object %v", objectname)
 	return
 }
 
-func (ociDriver *ArtifactDriver) ListObjects(artifact *wfv1.Artifact) ([]string, error) {
-	log.Info("DEBUG: ListObjects")
-	var files []string
-	err := waitutil.Backoff(defaultRetry,
-		func() (bool, error) {
-			return true, nil
-		})
-	return files, err
+// return our namespace string
+func getNamespace(ctx context.Context, client objectstorage.ObjectStorageClient) string {
+	request := objectstorage.GetNamespaceRequest{}
+	namespace, err := client.GetNamespace(ctx, request)
+	fatalIfError(err)
+
+	return *namespace.Value
 }
 
 func (ociDriver *ArtifactDriver) IsDirectory(artifact *wfv1.Artifact) (bool, error) {
 	log.Info("DEBUG: IsDirectory")
-	err := waitutil.Backoff(defaultRetry,
-		func() (bool, error) {
-			return true, nil
-		})
-	return true, err
+	log.Infof("IsDirectory currently not implemented for OCI")
+	return false, errors.New(errors.CodeNotImplemented, "IsDirectory currently not implemented for OCI")
 }
 
-func isTransientOCIErr() bool {
+// from https://docs.oracle.com/en-us/iaas/tools/python/2.88.2/api/retry.html
+//	    https://docs.oracle.com/en-us/iaas/Content/API/References/apierrors.htm
+func isTransientOCIErr(err error) bool {
 	log.Info("DEBUG: isTransientOCIErr")
-	return true
+
+	if serviceError, ok := ocicommon.IsServiceError(err); ok && serviceError.GetHTTPStatusCode() == 429 || (serviceError.GetHTTPStatusCode() >= 500 && serviceError.GetHTTPStatusCode() < 600) {
+		log.Info("INFO: Retrying status code: ", serviceError.GetHTTPStatusCode())
+		return true
+	}
+	return false
+}
+
+// log fatal error
+func fatalIfError(err error) {
+	if err != nil {
+		log.Errorf("ERROR: %v", err.Error())
+	}
 }
