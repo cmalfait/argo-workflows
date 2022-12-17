@@ -44,9 +44,8 @@ var (
 
 func (ociDriver *ArtifactDriver) initializeConfigurationProvider() (context.Context, objectstorage.ObjectStorageClient) {
 	var configurationProvider ocicommon.ConfigurationProvider
-	//	errors.Code
 
-	// We accept 3 types of auth.  1. instance_principal, 2. k8s_secret, 3. raw
+	// We accept 3 types of auth: instance_principal, k8s_secret, raw
 	// We default to instance principal
 	switch ociDriver.Provider {
 	case "instance_principal":
@@ -116,6 +115,7 @@ func listByPrefix(ctx context.Context, storageClient objectstorage.ObjectStorage
 	return filelist
 }
 
+// Load download from OCI storage to a local path
 func (ociDriver *ArtifactDriver) Load(inputArtifact *wfv1.Artifact, path string) error {
 	err := waitutil.Backoff(defaultRetry,
 		func() (bool, error) {
@@ -132,6 +132,8 @@ func (ociDriver *ArtifactDriver) Load(inputArtifact *wfv1.Artifact, path string)
 
 	return err
 }
+
+// downloadObject downloads an object from OCI storage
 func downloadObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, bucketname string, objectname string, path string) (err error) {
 	request := objectstorage.GetObjectRequest{
 		NamespaceName: &namespace,
@@ -155,11 +157,14 @@ func downloadObject(ctx context.Context, storageClient objectstorage.ObjectStora
 	return err
 }
 
+// OpenStream is currently not implemented, uses load instead
 func (ociDriver *ArtifactDriver) OpenStream(artifact *wfv1.Artifact) (io.ReadCloser, error) {
 	log.Info("DEBUG: OpenStream")
+	// todo: this is a temporary implementation utilizing load until stream is implemented 
 	return common.LoadToStream(artifact, ociDriver)
 }
 
+// Save stores an artifact in OCI storage.  IE: uploads a local file to an OCI bucket
 func (ociDriver *ArtifactDriver) Save(path string, outputArtifact *wfv1.Artifact) error {
 	log.Info("DEBUG: Save")
 	err := waitutil.Backoff(defaultRetry,
@@ -179,7 +184,7 @@ func (ociDriver *ArtifactDriver) Save(path string, outputArtifact *wfv1.Artifact
 	return err
 }
 
-// func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, path string, bucketName string, objectName string, metadata map[string]string) error {
+// putObject uploads to an OCI bucket
 func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, path string, bucketName string, objectName string) error {
 	uploadManager := transfer.NewUploadManager()
 	req := transfer.UploadFileRequest{
@@ -209,6 +214,7 @@ func putObject(ctx context.Context, storageClient objectstorage.ObjectStorageCli
 	return err
 }
 
+// callBack get information about a multiplart upload
 func callBack(multiPartUploadPart transfer.MultiPartUploadPart) {
 	if nil == multiPartUploadPart.Err {
 		log.Infof("INFO: Part: %d / %d is uploaded.", multiPartUploadPart.PartNum, multiPartUploadPart.TotalParts)
@@ -216,6 +222,7 @@ func callBack(multiPartUploadPart transfer.MultiPartUploadPart) {
 	}
 }
 
+// Delete an artifact from OCI
 func (ociDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
 	log.Info("DEBUG: Delete")
 	err := waitutil.Backoff(defaultRetry,
@@ -235,6 +242,7 @@ func (ociDriver *ArtifactDriver) Delete(artifact *wfv1.Artifact) error {
 	return err
 }
 
+// deleteObject deletes an object from OCI
 func deleteObject(ctx context.Context, storageClient objectstorage.ObjectStorageClient, namespace string, bucketname string, objectname string) (err error) {
 	request := objectstorage.DeleteObjectRequest{
 		NamespaceName: &namespace,
@@ -247,7 +255,7 @@ func deleteObject(ctx context.Context, storageClient objectstorage.ObjectStorage
 	return
 }
 
-// return our namespace string
+// getNamespace return our namespace string
 func getNamespace(ctx context.Context, client objectstorage.ObjectStorageClient) string {
 	request := objectstorage.GetNamespaceRequest{}
 	namespace, err := client.GetNamespace(ctx, request)
@@ -256,14 +264,16 @@ func getNamespace(ctx context.Context, client objectstorage.ObjectStorageClient)
 	return *namespace.Value
 }
 
+// IsDirectory not implemented yet
 func (ociDriver *ArtifactDriver) IsDirectory(artifact *wfv1.Artifact) (bool, error) {
 	log.Info("DEBUG: IsDirectory")
 	log.Infof("IsDirectory currently not implemented for OCI")
 	return false, errors.New(errors.CodeNotImplemented, "IsDirectory currently not implemented for OCI")
 }
 
+// inTransient checks if our error is retryable
 // from https://docs.oracle.com/en-us/iaas/tools/python/2.88.2/api/retry.html
-//	    https://docs.oracle.com/en-us/iaas/Content/API/References/apierrors.htm
+// and https://docs.oracle.com/en-us/iaas/Content/API/References/apierrors.htm
 func isTransientOCIErr(err error) bool {
 	log.Info("DEBUG: isTransientOCIErr")
 
@@ -274,7 +284,7 @@ func isTransientOCIErr(err error) bool {
 	return false
 }
 
-// log fatal error
+// fatalIfError logs fatal error 
 func fatalIfError(err error) {
 	if err != nil {
 		log.Errorf("ERROR: %v", err.Error())
